@@ -1,0 +1,1549 @@
+{
+  "name": "[AGENT-4]-Clip-Enhancer-Publisher",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "764f26d4-444d-4d18-bf3c-265a535e851b",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -14832,
+        864
+      ],
+      "id": "cb03856d-0f5a-40ec-953d-66d841bace86",
+      "name": "Webhook",
+      "webhookId": "764f26d4-444d-4d18-bf3c-265a535e851b"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  vp.id,\n  vp.plataforma,\n  vp.canal_id,\n  vp.video_id,\n  vp.url_video,\n  vp.titulo_original,\n  vp.duracao_segundos,\n  vp.nicho,\n  vp.submagic_project_id,\n  cd.nome_canal,\n  cd.tom_de_voz,\n  cd.nicho_alvo\nFROM videos_pendentes vp\nLEFT JOIN canais_descobertos cd ON cd.canal_id = vp.canal_id AND cd.plataforma = vp.plataforma\nWHERE vp.submagic_project_id = '{{ $('Webhook').item.json.body.projectId }}'\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "b8edf05f-a704-4e5c-ae3d-9093cf600b1e",
+      "name": "lookup-video-by-project",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -14160,
+        784
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza os clips do Submagic para o formato esperado pelo pipeline\nconst webhookBody = $('Webhook').item.json.body;\nconst videoData = $('lookup-video-by-project').first().json;\n\nconst clips = webhookBody.magicClips || [];\n\nconst sanitize = (s) => String(s || '').replace(/'/g, \"''\").substring(0, 500);\n\n// fallback forte pra ID do vídeo de origem\nconst video_origem_id =\n  videoData.video_origem_id ??\n  videoData.id_video_origem ??\n  videoData.id ??\n  videoData.video_id ??\n  null;\n\nconst normalized = clips\n  .filter(clip => clip.status === 'completed' && (clip.directUrl || clip.downloadUrl))\n  .sort((a, b) => (b.viralityScores?.total || 0) - (a.viralityScores?.total || 0))\n  .map(clip => ({\n    json: {\n      // Dados do clip\n      clip_url: clip.directUrl || clip.downloadUrl,\n      preview_url: clip.previewUrl || '',\n      transcricao: '',\n      titulo_sugerido: sanitize(clip.title || 'Sem título'),\n      titulo_original: sanitize(videoData.titulo_original || webhookBody.title || ''),\n      duracao_segundos: Math.round(clip.duration || 0),              // ✅ nome consistente\n      score_clip: Number(((clip.viralityScores?.total || 0) / 100).toFixed(2)), // ✅ número, não string\n      engine_usada: 'submagic',\n\n      // Dados do vídeo de origem\n      video_origem_id,                                              // ✅ garantido\n      video_id: videoData.video_id || null,\n      canal_id: videoData.canal_id || null,\n      nome_canal: sanitize(videoData.nome_canal || 'Canal'),\n      tom_de_voz: videoData.tom_de_voz || 'informativo',\n      nicho: videoData.nicho || videoData.nicho_alvo || 'geral',\n\n      // Metadados Submagic\n      submagic_clip_id: clip.id,\n      submagic_project_id: webhookBody.projectId,\n      virality_total: clip.viralityScores?.total || 0,\n      virality_hook: clip.viralityScores?.hook_strength || 0,\n      virality_story: clip.viralityScores?.story_quality || 0,\n      virality_share: clip.viralityScores?.shareability || 0,\n      virality_emotion: clip.viralityScores?.emotional_impact || 0\n    }\n  }));\n\nif (normalized.length === 0) {\n  return [{ json: { error: 'Nenhum clip válido encontrado no webhook', projectId: webhookBody.projectId } }];\n}\n\nreturn normalized;\n"
+      },
+      "id": "69ab6da8-656a-4d27-9a18-a316b3152126",
+      "name": "normalize-submagic-clips",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13488,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE videos_pendentes \nSET status = 'processando_clip', \n    submagic_status = '{{ $('Webhook').item.json.body.status }}'\nWHERE submagic_project_id = '{{ $('Webhook').item.json.body.projectId }}';",
+        "options": {}
+      },
+      "id": "8fe1050d-4059-4922-a987-75017f1417bc",
+      "name": "mark-video-processing-clips",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -13712,
+        688
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "54eb2d8d-e3f4-4003-bd25-1ce7292e8ff0",
+      "name": "log-invalid-webhook",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -13712,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "0574cc8d-b49a-40ef-9d1c-3c1cf7e3ef65",
+      "name": "loop-by-clip",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -13264,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-3-flash-preview:latest",
+          "mode": "list",
+          "cachedResultName": "gemini-3-flash-preview:latest"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "Você é um especialista em otimização de conteúdo para redes sociais, especialmente Shorts, Reels e TikTok.\n\nSeu trabalho é criar títulos virais, descrições envolventes e hashtags estratégicas.\n\nRegras OBRIGATÓRIAS:\n- Títulos: máximo 60 caracteres, usar gatilhos emocionais, números quando apropriado\n- Descrição: máximo 150 caracteres, incluir CTA sutil\n- Hashtags: 8-12 hashtags relevantes, mix de alto volume e nicho\n- Thumbnail: sugerir texto impactante (máximo 4 palavras)\n- Gancho: frase de hook para os primeiros 3 segundos\n\nAdapte o tom de voz conforme indicado.\nRetorne APENAS JSON válido.",
+              "role": "assistant"
+            },
+            {
+              "content": "=Crie conteúdo otimizado para este clip:\n\n**Vídeo Original:** {{ $json.titulo_original }}\n**Canal:** {{ $json.nome_canal }}\n**Nicho:** {{ $json.nicho }}\n**Tom de Voz:** {{ $json.tom_de_voz }}\n**Título Sugerido pela Engine:** {{ $json.titulo_sugerido }}\n**Score Viralidade:** {{ $json.virality_total }}/100\n**Transcrição do Clip:** {{ $json.transcricao || 'Não disponível' }}\n\nRetorne JSON:\n{\n  \"titulo_final\": \"máx 60 chars\",\n  \"descricao_base\": \"máx 150 chars com CTA\",\n  \"hashtags\": [\"#tag1\", \"#tag2\", ...],\n  \"sugestao_thumbnail\": \"máx 4 palavras\",\n  \"gancho_abertura\": \"frase hook 3 segundos\"\n}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.5
+        }
+      },
+      "id": "1477acc3-592a-4058-9622-1c9e4236ebab",
+      "name": "ai-enhance-clip",
+      "type": "@n8n/n8n-nodes-langchain.ollama",
+      "typeVersion": 1,
+      "position": [
+        -13040,
+        784
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "EsLqiLqqKwvsG3qM",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const clipData = $('loop-by-clip').item.json;\nconst aiRaw = $input.first().json;\n\nlet enhanced = {\n  titulo_final: clipData.titulo_sugerido || 'Sem título',\n  descricao_base: 'Confira este conteúdo!',\n  hashtags: ['#shorts', '#viral', '#fy'],\n  sugestao_thumbnail: 'IMPERDÍVEL',\n  gancho_abertura: ''\n};\n\ntry {\n  let parsed = null;\n  if (aiRaw.text) {\n    parsed = JSON.parse(aiRaw.text.replace(/```json\\n?|```\\n?/g, '').trim());\n  } else if (aiRaw.output) {\n    parsed = typeof aiRaw.output === 'string' ? JSON.parse(aiRaw.output) : aiRaw.output;\n  } else if (aiRaw.message?.content) {\n    parsed = JSON.parse(aiRaw.message.content);\n  } else if (aiRaw.titulo_final) {\n    parsed = aiRaw;\n  }\n  if (parsed) enhanced = { ...enhanced, ...parsed };\n} catch (e) {}\n\nconst sanitize = (s) => String(s || '').replace(/'/g, \"''\");\n\nlet titulo = enhanced.titulo_final || '';\nif (titulo.length > 60) titulo = titulo.substring(0, 57) + '...';\n\nconst hashtagsArr = Array.isArray(enhanced.hashtags) ? enhanced.hashtags : ['#shorts'];\n\nreturn [{\n  json: {\n    ...clipData,\n    titulo_final: sanitize(titulo),\n    descricao_base: sanitize(enhanced.descricao_base),\n    hashtags: hashtagsArr,\n    sugestao_thumbnail: sanitize(enhanced.sugestao_thumbnail),\n    gancho_abertura: sanitize(enhanced.gancho_abertura || ''),\n    titulo_length: titulo.length,\n    hashtag_count: hashtagsArr.length\n  }\n}];"
+      },
+      "id": "8968fb19-152c-4f99-b20d-78a48fb332c7",
+      "name": "parse-ai-response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -12688,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-3-flash-preview:latest",
+          "mode": "list",
+          "cachedResultName": "gemini-3-flash-preview:latest"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "Extraia exatamente 5 palavras-chave/tópicos centrais do conteúdo abaixo.\n\nRetorne APENAS um JSON: {\"keywords\": [\"keyword1\", \"keyword2\", \"keyword3\", \"keyword4\", \"keyword5\"]}\n\nSem explicações, sem markdown, apenas o JSON.",
+              "role": "assistant"
+            },
+            {
+              "content": "=Título: {{ $json.titulo_final }}\nDescrição: {{ $json.descricao_base }}\nNicho: {{ $json.nicho }}\nTranscrição: {{ $json.transcricao || 'Não disponível' }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "7678a29b-e95d-4a7c-b695-83fc3e6de72d",
+      "name": "ai-extract-keywords",
+      "type": "@n8n/n8n-nodes-langchain.ollama",
+      "typeVersion": 1,
+      "position": [
+        -12464,
+        784
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "EsLqiLqqKwvsG3qM",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pega o clip já estruturado (objeto) do node anterior\nconst clipData = $('parse-ai-response').item.json;\n\n// Resposta do ai-extract-keywords (normalmente vem em json.content como string)\nconst aiRaw = $input.first().json;\n\nlet keywords = [];\n\ntry {\n  let parsed = null;\n\n  // 1) Formato mais comum nesse seu fluxo: aiRaw.content = '{\"keywords\":[...]}'\n  if (typeof aiRaw.content === 'string' && aiRaw.content.trim()) {\n    parsed = JSON.parse(\n      aiRaw.content\n        .replace(/```json\\s*|```/g, '')\n        .trim()\n    );\n  }\n  // 2) Outros formatos possíveis\n  else if (typeof aiRaw.text === 'string' && aiRaw.text.trim()) {\n    parsed = JSON.parse(\n      aiRaw.text\n        .replace(/```json\\s*|```/g, '')\n        .trim()\n    );\n  } else if (aiRaw.output) {\n    parsed = typeof aiRaw.output === 'string' ? JSON.parse(aiRaw.output) : aiRaw.output;\n  } else if (aiRaw.keywords) {\n    parsed = aiRaw;\n  }\n\n  if (parsed && Array.isArray(parsed.keywords)) {\n    keywords = parsed.keywords\n      .map(k => String(k || '').toLowerCase().trim())\n      .filter(k => k.length > 0);\n  }\n} catch (e) {\n  // ignora e cai no fallback\n}\n\n// Fallback: usa nicho + palavras do título\nif (keywords.length === 0) {\n  const base = [];\n  if (clipData.nicho) base.push(String(clipData.nicho).toLowerCase().trim());\n\n  const titleWords = String(clipData.titulo_final || '')\n    .split(/\\s+/)\n    .map(w => w.toLowerCase().trim())\n    .filter(w => w.length > 4);\n\n  base.push(...titleWords.slice(0, 4));\n  keywords = base.filter(Boolean);\n}\n\nconst sanitize = (s) => String(s || '').replace(/'/g, \"''\");\n\nreturn [{\n  json: {\n    ...clipData,\n    extracted_keywords: keywords,\n    keywords_sql: keywords.map(k => sanitize(k)).join(\"','\")\n  }\n}];\n"
+      },
+      "id": "12eeef05-f4d1-4558-9834-b56ba86c7bba",
+      "name": "parse-extracted-keywords",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -12112,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COALESCE(cm.estrategia_padrao, 'incluir 1 link relevante') AS estrategia,\n  COALESCE(cm.link_captacao_leads, '') AS link_leads\nFROM config_monetizacao cm\nWHERE cm.canal_id = '{{ $json.canal_id }}'\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "55b67309-8d13-4440-9099-d7db08c5566d",
+      "name": "fetch-monetization-config",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -11888,
+        784
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  la.palavra_chave,\n  la.descricao_curta,\n  la.url,\n  la.tipo\nFROM links_afiliados la\nWHERE la.ativo = true\n  AND (\n    la.nicho IS NULL\n    OR la.nicho = '{{ $('parse-extracted-keywords').item.json.nicho }}'\n    OR la.palavra_chave IN ('{{ $('parse-extracted-keywords').item.json.keywords_sql }}')\n  )\nORDER BY \n  CASE WHEN la.palavra_chave IN ('{{ $('parse-extracted-keywords').item.json.keywords_sql }}') THEN 0 ELSE 1 END\nLIMIT 3;",
+        "options": {}
+      },
+      "id": "ce3bea56-8f1b-4765-9e47-017c73d9e48d",
+      "name": "fetch-affiliate-links",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -11664,
+        784
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const clipData = $('parse-extracted-keywords').item.json;\nconst links = $('fetch-affiliate-links').all();\nconst monetConfig = $('fetch-monetization-config').item?.json || {};\n\nlet blocoMonetizacao = '';\n\n// Add affiliate links\nif (links && links.length > 0 && links[0].json.url) {\n  blocoMonetizacao = '\\n\\n---';\n  for (const link of links) {\n    const l = link.json;\n    if (!l.url) continue;\n    const emoji = l.tipo === 'amazon' ? '📚' : \n                  l.tipo === 'hotmart' ? '🎓' : \n                  l.tipo === 'produto_proprio' ? '🚀' : '🔗';\n    blocoMonetizacao += `\\n${emoji} ${l.descricao_curta}: ${l.url}`;\n  }\n}\n\n// Add lead capture link from config_monetizacao\nif (monetConfig.link_leads) {\n  blocoMonetizacao += `\\n\\n📩 Acesse conteúdo exclusivo: ${monetConfig.link_leads}`;\n}\n\nconst hashtagsStr = clipData.hashtags\n  .map(h => h.startsWith('#') ? h : `#${h}`)\n  .join(' ');\n\nconst descricaoFinal = `${clipData.descricao_base}${blocoMonetizacao}\\n\\n${hashtagsStr}`;\n\nconst sanitize = (s) => String(s || '').replace(/'/g, \"''\");\n\nreturn [{\n  json: {\n    ...clipData,\n    descricao_final: sanitize(descricaoFinal),\n    hashtags_str: sanitize(hashtagsStr),\n    links_incluidos: links.filter(l => l.json.url).length\n  }\n}];"
+      },
+      "id": "93996c21-15b9-44dc-a3ae-03fb2756de52",
+      "name": "build-final-description",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -11440,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO clips_gerados (\n  video_origem_id,\n  engine_usada,\n  arquivo_clip_url,\n  transcricao_clip,\n  titulo_sugerido_engine,\n  titulo_final,\n  descricao_final,\n  hashtags,\n  sugestao_thumbnail,\n  gancho_abertura,\n  duracao_segundos,\n  score_clip,\n  status_publicacao\n) VALUES (\n  '{{ $json.video_origem_id }}',\n  '{{ $json.engine_usada }}',\n  '{{ $json.clip_url }}',\n  '{{ $json.transcricao }}',\n  '{{ $json.titulo_sugerido }}',\n  '{{ $json.titulo_final }}',\n  '{{ $json.descricao_final }}',\n  '{{ $json.hashtags_str }}',\n  '{{ $json.sugestao_thumbnail }}',\n  '{{ $json.gancho_abertura }}',\n  {{ $json.duracao || 0 }},\n  {{ $json.score || 0 }},\n  'pronto_para_publicar'\n) RETURNING id;",
+        "options": {}
+      },
+      "id": "ad16178a-7f07-4c4d-a431-edee200a6594",
+      "name": "save-clip-to-db",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -11216,
+        784
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COALESCE(publicar_youtube, true) AS publicar_youtube,\n  COALESCE(publicar_tiktok, false) AS publicar_tiktok,\n  COALESCE(publicar_instagram, false) AS publicar_instagram,\n  COALESCE(publicar_facebook, false) AS publicar_facebook\nFROM config_publicacao_canais\nWHERE canal_id = '{{ $('loop-by-clip').item.json.canal_id }}'\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "dc1316a9-4b81-4da9-a521-cbe6f34ffdaa",
+      "name": "fetch-publish-config",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -10992,
+        784
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const clipId = $('save-clip-to-db').item.json.id;\nconst clipData = $('build-final-description').item.json;\nconst configRaw = $json;\n\nconst config = {\n  publicar_youtube: configRaw.publicar_youtube ?? true,\n  publicar_tiktok: configRaw.publicar_tiktok ?? false,\n  publicar_instagram: configRaw.publicar_instagram ?? false,\n  publicar_facebook: configRaw.publicar_facebook ?? false\n};\n\nconst plataformas = [];\nconst platforms = [\n  { key: 'publicar_youtube', name: 'youtube' },\n  { key: 'publicar_tiktok', name: 'tiktok' },\n  { key: 'publicar_instagram', name: 'instagram' },\n  { key: 'publicar_facebook', name: 'facebook' }\n];\n\nfor (const p of platforms) {\n  if (config[p.key]) {\n    plataformas.push({\n      plataforma: p.name,\n      clip_id: clipId,\n      clip_url: clipData.clip_url,\n      titulo: clipData.titulo_final,\n      descricao: clipData.descricao_final\n    });\n  }\n}\n\nif (plataformas.length === 0) {\n  plataformas.push({\n    plataforma: 'youtube',\n    clip_id: clipId,\n    clip_url: clipData.clip_url,\n    titulo: clipData.titulo_final,\n    descricao: clipData.descricao_final\n  });\n}\n\nreturn plataformas.map(p => ({ json: p }));"
+      },
+      "id": "1dcfcaec-6c84-4f34-a743-cb8281a45014",
+      "name": "prepare-publish-items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -10768,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "bf5f8e80-24ed-4731-ba3c-d5041f2880e8",
+      "name": "loop-by-platform",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -13936,
+        80
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.plataforma }}",
+                    "rightValue": "youtube",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "YouTube"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.plataforma }}",
+                    "rightValue": "tiktok",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "TikTok"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.plataforma }}",
+                    "rightValue": "instagram",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Instagram"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.plataforma }}",
+                    "rightValue": "facebook",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Facebook"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "204facbd-e628-44bf-8285-340818f7f07b",
+      "name": "switch-platform",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -14832,
+        48
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "snippet,status"
+            },
+            {
+              "name": "uploadType",
+              "value": "resumable"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"snippet\": {\n    \"title\": \"{{ $json.titulo }}\",\n    \"description\": \"{{ $json.descricao }}\",\n    \"categoryId\": \"22\"\n  },\n  \"status\": {\n    \"privacyStatus\": \"public\",\n    \"selfDeclaredMadeForKids\": false\n  }\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "a8022d83-be32-4141-93da-37828fb9f73b",
+      "name": "upload-youtube-shorts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -14608,
+        -208
+      ],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "7tGOJOcTH3PmmxRz",
+          "name": "[CRED]PEDRO-INTENTUS-EMAIL"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"post_info\": {\n    \"title\": \"{{ $json.titulo }}\",\n    \"privacy_level\": \"PUBLIC_TO_EVERYONE\",\n    \"disable_duet\": false,\n    \"disable_comment\": false,\n    \"disable_stitch\": false\n  },\n  \"source_info\": {\n    \"source\": \"PULL_FROM_URL\",\n    \"video_url\": \"{{ $json.clip_url }}\"\n  }\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "356d24c4-c3fd-4b4e-8836-032f4b1e4237",
+      "name": "upload-tiktok",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -14608,
+        -16
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.INSTAGRAM_BUSINESS_ID }}/media",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"media_type\": \"REELS\",\n  \"video_url\": \"{{ $json.clip_url }}\",\n  \"caption\": \"{{ $json.titulo }}\\n\\n{{ $json.descricao }}\"\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "0560a59e-b01b-4f71-acb0-31d2bb23a563",
+      "name": "upload-instagram-reels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -14608,
+        176
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.FACEBOOK_PAGE_ID }}/videos",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"file_url\": \"{{ $json.clip_url }}\",\n  \"title\": \"{{ $json.titulo }}\",\n  \"description\": \"{{ $json.descricao }}\"\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "2061384d-d054-4921-bf3e-0994995c590b",
+      "name": "upload-facebook-reels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -14608,
+        368
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO publicacoes (\n  clip_id,\n  plataforma,\n  id_publicacao_plataforma,\n  url_publicacao,\n  status,\n  data_publicacao\n) VALUES (\n  {{ $('loop-by-platform').item.json.clip_id }},\n  '{{ $('loop-by-platform').item.json.plataforma }}',\n  '{{ $json.id || $json.publish_id || $json.creation_id || ''pending'' }}',\n  '{{ $json.url || '''' }}',\n  'publicado',\n  NOW()\n);",
+        "options": {}
+      },
+      "id": "22517ad9-5144-4340-9ced-92d89b6f4ad1",
+      "name": "register-publication",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -14384,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE clips_gerados \nSET status_publicacao = 'publicado'\nWHERE id = {{ $('loop-by-platform').item.json.clip_id }};",
+        "options": {}
+      },
+      "id": "fd48e40d-e7f9-4164-b151-65b079803ca7",
+      "name": "update-clip-published",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -14160,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE videos_pendentes \nSET status = 'concluido',\n    submagic_status = 'completed',\n    updated_at = NOW()\nWHERE id = {{ $('lookup-video-by-project').first().json.id }};",
+        "options": {}
+      },
+      "id": "ff074937-af55-4b3f-bf65-7400668130c0",
+      "name": "mark-video-complete",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -12976,
+        592
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "status-completed",
+              "leftValue": "={{ $('Webhook').item.json.body.status }}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "ignoreCase": true
+        }
+      },
+      "id": "77937e11-1d3c-4153-8dd2-94b5b9eca587",
+      "name": "if-webhook-valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -13936,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "name": "={{ $json.titulo }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "1vMZqkPR3JiaZi-HzaSS15W3Kol_rSnE0",
+          "mode": "list",
+          "cachedResultName": "cortes",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1vMZqkPR3JiaZi-HzaSS15W3Kol_rSnE0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -10320,
+        960
+      ],
+      "id": "36ba5dc1-0e54-4581-b245-e4df059a766f",
+      "name": "Upload file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "6rPCqu3VOCHzeBaJ",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.clip_url }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -10544,
+        784
+      ],
+      "id": "81cc1ff8-49f1-43da-a82c-b8588d4d1cf9",
+      "name": "baixar-video"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "body.magicClips",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -14608,
+        864
+      ],
+      "id": "28b2215d-c811-4c94-97c1-7e8629b5fc2c",
+      "name": "Split Out"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -14384,
+        864
+      ],
+      "id": "c9fb82e0-1fa3-4579-a36f-2d0ec6e56109",
+      "name": "Loop Over Items"
+    }
+  ],
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "webhook.racc.intentus.digital",
+            "user-agent": "Submagic-Webhook/1.0",
+            "content-length": "19457",
+            "accept": "*/*",
+            "accept-encoding": "br, gzip, deflate",
+            "accept-language": "*",
+            "content-type": "application/json",
+            "sec-fetch-mode": "cors",
+            "x-forwarded-for": "18.133.65.152",
+            "x-forwarded-host": "webhook.racc.intentus.digital",
+            "x-forwarded-port": "443",
+            "x-forwarded-proto": "https",
+            "x-forwarded-server": "78a716aa7184",
+            "x-invocation-id": "cle1::jhk2z-1770683484971-1057ce97449e",
+            "x-real-ip": "18.133.65.152",
+            "x-vercel-id": "cle1::jhk2z-1770683484971-1057ce97449e"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "projectId": "9c5b8005-a1c9-4993-a776-77e2b10f82c5",
+            "status": "completed",
+            "title": "YT magic-clips test1",
+            "duration": 982,
+            "completedAt": "2026-02-10T00:31:25.828Z",
+            "magicClips": [
+              {
+                "id": "14332541-43ed-4d23-8836-16b26dc86d72",
+                "title": "Nubank não está top cinco",
+                "duration": 17.2,
+                "viralityScores": {
+                  "total": 88,
+                  "shareability": 22,
+                  "hook_strength": 23,
+                  "story_quality": 21,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/14332541-43ed-4d23-8836-16b26dc86d72",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/14332541-43ed-4d23-8836-16b26dc86d72-download.mp4&newFileName=Nubank%20n%C3%A3o%20est%C3%A1%20top%20cinco.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/14332541-43ed-4d23-8836-16b26dc86d72-download.mp4"
+              },
+              {
+                "id": "d24d31dd-c44c-4405-9269-e3fcd6462030",
+                "title": "Como viajar sem dinheiro",
+                "duration": 29.44,
+                "viralityScores": {
+                  "total": 91,
+                  "shareability": 21,
+                  "hook_strength": 25,
+                  "story_quality": 22,
+                  "emotional_impact": 23
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/d24d31dd-c44c-4405-9269-e3fcd6462030",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/d24d31dd-c44c-4405-9269-e3fcd6462030-download.mp4&newFileName=Como%20viajar%20sem%20dinheiro.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/d24d31dd-c44c-4405-9269-e3fcd6462030-download.mp4"
+              },
+              {
+                "id": "fc48debc-1d8d-44de-9700-54d459f67fe2",
+                "title": "Maior canal de finanças",
+                "duration": 23.8,
+                "viralityScores": {
+                  "total": 85,
+                  "shareability": 22,
+                  "hook_strength": 20,
+                  "story_quality": 22,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/fc48debc-1d8d-44de-9700-54d459f67fe2",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/fc48debc-1d8d-44de-9700-54d459f67fe2-download.mp4&newFileName=Maior%20canal%20de%20finan%C3%A7as.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/fc48debc-1d8d-44de-9700-54d459f67fe2-download.mp4"
+              },
+              {
+                "id": "0aa35cb5-6bdb-424e-8260-c1940716551f",
+                "title": "Aulão gratuito janeiro",
+                "duration": 18.92,
+                "viralityScores": {
+                  "total": 87,
+                  "shareability": 22,
+                  "hook_strength": 21,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/0aa35cb5-6bdb-424e-8260-c1940716551f",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/0aa35cb5-6bdb-424e-8260-c1940716551f-download.mp4&newFileName=Aul%C3%A3o%20gratuito%20janeiro.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/0aa35cb5-6bdb-424e-8260-c1940716551f-download.mp4"
+              },
+              {
+                "id": "49d89f59-684e-4640-9b31-fe6d96f54cea",
+                "title": "Poucos cartões bons",
+                "duration": 17.96,
+                "viralityScores": {
+                  "total": 86,
+                  "shareability": 22,
+                  "hook_strength": 21,
+                  "story_quality": 22,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/49d89f59-684e-4640-9b31-fe6d96f54cea",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/49d89f59-684e-4640-9b31-fe6d96f54cea-download.mp4&newFileName=Poucos%20cart%C3%B5es%20bons.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/49d89f59-684e-4640-9b31-fe6d96f54cea-download.mp4"
+              },
+              {
+                "id": "c7101e1c-880e-462c-b0f2-fcf0f1c4ae81",
+                "title": "Viagem dos sonhos lascado",
+                "duration": 23.37,
+                "viralityScores": {
+                  "total": 89,
+                  "shareability": 22,
+                  "hook_strength": 24,
+                  "story_quality": 21,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/c7101e1c-880e-462c-b0f2-fcf0f1c4ae81",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/c7101e1c-880e-462c-b0f2-fcf0f1c4ae81-download.mp4&newFileName=Viagem%20dos%20sonhos%20lascado.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/c7101e1c-880e-462c-b0f2-fcf0f1c4ae81-download.mp4"
+              },
+              {
+                "id": "bbc6e6d8-641c-4b4b-b56a-773e2d4a1fb0",
+                "title": "Abaixa bola menos milha",
+                "duration": 16.96,
+                "viralityScores": {
+                  "total": 88,
+                  "shareability": 22,
+                  "hook_strength": 23,
+                  "story_quality": 21,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/bbc6e6d8-641c-4b4b-b56a-773e2d4a1fb0",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/bbc6e6d8-641c-4b4b-b56a-773e2d4a1fb0-download.mp4&newFileName=Abaixa%20bola%20menos%20milha.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/bbc6e6d8-641c-4b4b-b56a-773e2d4a1fb0-download.mp4"
+              },
+              {
+                "id": "fd3b8ad2-9fc5-404b-89e6-4463be7a08e2",
+                "title": "Dez milhas cada real",
+                "duration": 16.72,
+                "viralityScores": {
+                  "total": 90,
+                  "shareability": 22,
+                  "hook_strength": 24,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/fd3b8ad2-9fc5-404b-89e6-4463be7a08e2",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/fd3b8ad2-9fc5-404b-89e6-4463be7a08e2-download.mp4&newFileName=Dez%20milhas%20cada%20real.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/fd3b8ad2-9fc5-404b-89e6-4463be7a08e2-download.mp4"
+              },
+              {
+                "id": "9b0efb3d-d5b6-4efc-aa9a-ff62813ec4c1",
+                "title": "Rio Janeiro duas camisetas",
+                "duration": 17.24,
+                "viralityScores": {
+                  "total": 89,
+                  "shareability": 22,
+                  "hook_strength": 23,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/9b0efb3d-d5b6-4efc-aa9a-ff62813ec4c1",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/9b0efb3d-d5b6-4efc-aa9a-ff62813ec4c1-download.mp4&newFileName=Rio%20Janeiro%20duas%20camisetas.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/9b0efb3d-d5b6-4efc-aa9a-ff62813ec4c1-download.mp4"
+              },
+              {
+                "id": "419271c5-23b4-42eb-8517-b0b9e9503791",
+                "title": "Cidade dos sonhos",
+                "duration": 20.6,
+                "viralityScores": {
+                  "total": 84,
+                  "shareability": 22,
+                  "hook_strength": 19,
+                  "story_quality": 21,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/419271c5-23b4-42eb-8517-b0b9e9503791",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/419271c5-23b4-42eb-8517-b0b9e9503791-download.mp4&newFileName=Cidade%20dos%20sonhos.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/419271c5-23b4-42eb-8517-b0b9e9503791-download.mp4"
+              },
+              {
+                "id": "eaf2660c-7784-48c4-bff0-08257897b55c",
+                "title": "Todo mundo viajando mundo",
+                "duration": 22.88,
+                "viralityScores": {
+                  "total": 85,
+                  "shareability": 22,
+                  "hook_strength": 19,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/eaf2660c-7784-48c4-bff0-08257897b55c",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/eaf2660c-7784-48c4-bff0-08257897b55c-download.mp4&newFileName=Todo%20mundo%20viajando%20mundo.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/eaf2660c-7784-48c4-bff0-08257897b55c-download.mp4"
+              },
+              {
+                "id": "8dd1cdac-f1bd-42d9-8457-eca2a3f66af8",
+                "title": "Presentes Natal mil reais",
+                "duration": 16,
+                "viralityScores": {
+                  "total": 87,
+                  "shareability": 22,
+                  "hook_strength": 21,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/8dd1cdac-f1bd-42d9-8457-eca2a3f66af8",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/8dd1cdac-f1bd-42d9-8457-eca2a3f66af8-download.mp4&newFileName=Presentes%20Natal%20mil%20reais.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/8dd1cdac-f1bd-42d9-8457-eca2a3f66af8-download.mp4"
+              },
+              {
+                "id": "973df918-220f-4b10-b497-3233fd6db643",
+                "title": "Seis reais dois pontos",
+                "duration": 19.84,
+                "viralityScores": {
+                  "total": 83,
+                  "shareability": 22,
+                  "hook_strength": 19,
+                  "story_quality": 21,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/973df918-220f-4b10-b497-3233fd6db643",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/973df918-220f-4b10-b497-3233fd6db643-download.mp4&newFileName=Seis%20reais%20dois%20pontos.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/973df918-220f-4b10-b497-3233fd6db643-download.mp4"
+              },
+              {
+                "id": "067a8aba-6098-482a-98f3-f8190435befe",
+                "title": "Cartão alta renda acessível",
+                "duration": 23.8,
+                "viralityScores": {
+                  "total": 85,
+                  "shareability": 22,
+                  "hook_strength": 20,
+                  "story_quality": 22,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/067a8aba-6098-482a-98f3-f8190435befe",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/067a8aba-6098-482a-98f3-f8190435befe-download.mp4&newFileName=Cart%C3%A3o%20alta%20renda%20acess%C3%ADvel.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/067a8aba-6098-482a-98f3-f8190435befe-download.mp4"
+              },
+              {
+                "id": "3004708b-175f-40aa-93c3-9e3109fe972c",
+                "title": "Cooperativas dão nome",
+                "duration": 21.04,
+                "viralityScores": {
+                  "total": 86,
+                  "shareability": 22,
+                  "hook_strength": 21,
+                  "story_quality": 22,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/3004708b-175f-40aa-93c3-9e3109fe972c",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/3004708b-175f-40aa-93c3-9e3109fe972c-download.mp4&newFileName=Cooperativas%20d%C3%A3o%20nome.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/3004708b-175f-40aa-93c3-9e3109fe972c-download.mp4"
+              },
+              {
+                "id": "471f6a33-a16f-4e31-9d65-62ae08bb32dd",
+                "title": "Cartão adicional estratégia",
+                "duration": 21.22,
+                "viralityScores": {
+                  "total": 87,
+                  "shareability": 22,
+                  "hook_strength": 22,
+                  "story_quality": 22,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/471f6a33-a16f-4e31-9d65-62ae08bb32dd",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/471f6a33-a16f-4e31-9d65-62ae08bb32dd-download.mp4&newFileName=Cart%C3%A3o%20adicional%20estrat%C3%A9gia.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/471f6a33-a16f-4e31-9d65-62ae08bb32dd-download.mp4"
+              },
+              {
+                "id": "2367db6a-de59-4814-bbd7-ffa89e0b4b79",
+                "title": "Peso ou dólar",
+                "duration": 16.12,
+                "viralityScores": {
+                  "total": 84,
+                  "shareability": 22,
+                  "hook_strength": 19,
+                  "story_quality": 22,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/2367db6a-de59-4814-bbd7-ffa89e0b4b79",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/2367db6a-de59-4814-bbd7-ffa89e0b4b79-download.mp4&newFileName=Peso%20ou%20d%C3%B3lar.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/2367db6a-de59-4814-bbd7-ffa89e0b4b79-download.mp4"
+              },
+              {
+                "id": "a535402e-52e7-4303-8831-6d8392988fa9",
+                "title": "Upgrade gratuito direito",
+                "duration": 17.44,
+                "viralityScores": {
+                  "total": 86,
+                  "shareability": 22,
+                  "hook_strength": 20,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/a535402e-52e7-4303-8831-6d8392988fa9",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/a535402e-52e7-4303-8831-6d8392988fa9-download.mp4&newFileName=Upgrade%20gratuito%20direito.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/a535402e-52e7-4303-8831-6d8392988fa9-download.mp4"
+              },
+              {
+                "id": "916f72bd-0614-4f68-be0e-2082a1657ebf",
+                "title": "Quatro vírgula dois",
+                "duration": 20.44,
+                "viralityScores": {
+                  "total": 87,
+                  "shareability": 23,
+                  "hook_strength": 21,
+                  "story_quality": 22,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/916f72bd-0614-4f68-be0e-2082a1657ebf",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/916f72bd-0614-4f68-be0e-2082a1657ebf-download.mp4&newFileName=Quatro%20v%C3%ADrgula%20dois.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/916f72bd-0614-4f68-be0e-2082a1657ebf-download.mp4"
+              },
+              {
+                "id": "52a0b9eb-90bc-43f2-880e-92bc0588ddc1",
+                "title": "Nubank Taboão Serra",
+                "duration": 19.6,
+                "viralityScores": {
+                  "total": 90,
+                  "shareability": 22,
+                  "hook_strength": 24,
+                  "story_quality": 21,
+                  "emotional_impact": 23
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/52a0b9eb-90bc-43f2-880e-92bc0588ddc1",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/52a0b9eb-90bc-43f2-880e-92bc0588ddc1-download.mp4&newFileName=Nubank%20Tabo%C3%A3o%20Serra.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/52a0b9eb-90bc-43f2-880e-92bc0588ddc1-download.mp4"
+              },
+              {
+                "id": "3e57ec08-9004-41cd-be4c-fea90e74ab86",
+                "title": "Depende onde mora",
+                "duration": 24,
+                "viralityScores": {
+                  "total": 85,
+                  "shareability": 22,
+                  "hook_strength": 20,
+                  "story_quality": 22,
+                  "emotional_impact": 21
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/3e57ec08-9004-41cd-be4c-fea90e74ab86",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/3e57ec08-9004-41cd-be4c-fea90e74ab86-download.mp4&newFileName=Depende%20onde%20mora.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/3e57ec08-9004-41cd-be4c-fea90e74ab86-download.mp4"
+              },
+              {
+                "id": "d2b2bd6a-f4b9-49db-8c36-b65ea5f0b9fb",
+                "title": "Dó usar minhas milhas",
+                "duration": 20.24,
+                "viralityScores": {
+                  "total": 86,
+                  "shareability": 21,
+                  "hook_strength": 22,
+                  "story_quality": 21,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/d2b2bd6a-f4b9-49db-8c36-b65ea5f0b9fb",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/d2b2bd6a-f4b9-49db-8c36-b65ea5f0b9fb-download.mp4&newFileName=D%C3%B3%20usar%20minhas%20milhas.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/d2b2bd6a-f4b9-49db-8c36-b65ea5f0b9fb-download.mp4"
+              },
+              {
+                "id": "13e5f9ac-8e84-4815-aae8-ff45eddf17f8",
+                "title": "Maioria milhas não cartão",
+                "duration": 18.34,
+                "viralityScores": {
+                  "total": 91,
+                  "shareability": 22,
+                  "hook_strength": 25,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/13e5f9ac-8e84-4815-aae8-ff45eddf17f8",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/13e5f9ac-8e84-4815-aae8-ff45eddf17f8-download.mp4&newFileName=Maioria%20milhas%20n%C3%A3o%20cart%C3%A3o.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/13e5f9ac-8e84-4815-aae8-ff45eddf17f8-download.mp4"
+              },
+              {
+                "id": "5f9b8c63-02cc-43b3-815e-71053541b23d",
+                "title": "Hotsite sites quentes",
+                "duration": 19.74,
+                "viralityScores": {
+                  "total": 89,
+                  "shareability": 22,
+                  "hook_strength": 23,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/5f9b8c63-02cc-43b3-815e-71053541b23d",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/5f9b8c63-02cc-43b3-815e-71053541b23d-download.mp4&newFileName=Hotsite%20sites%20quentes.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/5f9b8c63-02cc-43b3-815e-71053541b23d-download.mp4"
+              },
+              {
+                "id": "8daa2b96-6da8-4179-a3ff-29daf3db6707",
+                "title": "Quer ser dependente",
+                "duration": 21.72,
+                "viralityScores": {
+                  "total": 88,
+                  "shareability": 22,
+                  "hook_strength": 23,
+                  "story_quality": 21,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/8daa2b96-6da8-4179-a3ff-29daf3db6707",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/8daa2b96-6da8-4179-a3ff-29daf3db6707-download.mp4&newFileName=Quer%20ser%20dependente.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/8daa2b96-6da8-4179-a3ff-29daf3db6707-download.mp4"
+              },
+              {
+                "id": "7fb0b87f-7c61-405b-8bbe-7b4b0e9df0ed",
+                "title": "Leite nan mil milhas",
+                "duration": 20.64,
+                "viralityScores": {
+                  "total": 87,
+                  "shareability": 22,
+                  "hook_strength": 21,
+                  "story_quality": 21,
+                  "emotional_impact": 23
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/7fb0b87f-7c61-405b-8bbe-7b4b0e9df0ed",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/7fb0b87f-7c61-405b-8bbe-7b4b0e9df0ed-download.mp4&newFileName=Leite%20nan%20mil%20milhas.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/7fb0b87f-7c61-405b-8bbe-7b4b0e9df0ed-download.mp4"
+              },
+              {
+                "id": "e55ce551-710e-4ee4-9c3a-3be19389fd36",
+                "title": "Natural mais econômica",
+                "duration": 27,
+                "viralityScores": {
+                  "total": 85,
+                  "shareability": 22,
+                  "hook_strength": 19,
+                  "story_quality": 22,
+                  "emotional_impact": 22
+                },
+                "status": "completed",
+                "previewUrl": "https://app.submagic.co/view/e55ce551-710e-4ee4-9c3a-3be19389fd36",
+                "downloadUrl": "https://app.submagic.co/api/file/download?path=42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/e55ce551-710e-4ee4-9c3a-3be19389fd36-download.mp4&newFileName=Natural%20mais%20econ%C3%B4mica.mp4",
+                "directUrl": "https://dqu1p08d61fh.cloudfront.net/42cc871e-e0ed-4b7e-8430-7a1d3d8cb84c/9c5b8005-a1c9-4993-a776-77e2b10f82c5/e55ce551-710e-4ee4-9c3a-3be19389fd36-download.mp4"
+              }
+            ]
+          },
+          "webhookUrl": "https://webhook.racc.intentus.digital/webhook/764f26d4-444d-4d18-bf3c-265a535e851b",
+          "executionMode": "production"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Split Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "lookup-video-by-project": {
+      "main": [
+        [
+          {
+            "node": "if-webhook-valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "normalize-submagic-clips": {
+      "main": [
+        [
+          {
+            "node": "loop-by-clip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "mark-video-processing-clips": {
+      "main": [
+        [
+          {
+            "node": "normalize-submagic-clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loop-by-clip": {
+      "main": [
+        [
+          {
+            "node": "mark-video-complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ai-enhance-clip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai-enhance-clip": {
+      "main": [
+        [
+          {
+            "node": "parse-ai-response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-ai-response": {
+      "main": [
+        [
+          {
+            "node": "ai-extract-keywords",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai-extract-keywords": {
+      "main": [
+        [
+          {
+            "node": "parse-extracted-keywords",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-extracted-keywords": {
+      "main": [
+        [
+          {
+            "node": "fetch-monetization-config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-monetization-config": {
+      "main": [
+        [
+          {
+            "node": "fetch-affiliate-links",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-affiliate-links": {
+      "main": [
+        [
+          {
+            "node": "build-final-description",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "build-final-description": {
+      "main": [
+        [
+          {
+            "node": "save-clip-to-db",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "save-clip-to-db": {
+      "main": [
+        [
+          {
+            "node": "fetch-publish-config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-publish-config": {
+      "main": [
+        [
+          {
+            "node": "prepare-publish-items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-publish-items": {
+      "main": [
+        [
+          {
+            "node": "baixar-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loop-by-platform": {
+      "main": [
+        [],
+        []
+      ]
+    },
+    "switch-platform": {
+      "main": [
+        [
+          {
+            "node": "upload-youtube-shorts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "upload-tiktok",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "upload-instagram-reels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "upload-facebook-reels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "upload-youtube-shorts": {
+      "main": [
+        [
+          {
+            "node": "register-publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "upload-tiktok": {
+      "main": [
+        [
+          {
+            "node": "register-publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "upload-instagram-reels": {
+      "main": [
+        [
+          {
+            "node": "register-publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "upload-facebook-reels": {
+      "main": [
+        [
+          {
+            "node": "register-publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "register-publication": {
+      "main": [
+        [
+          {
+            "node": "update-clip-published",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "update-clip-published": {
+      "main": [
+        [
+          {
+            "node": "loop-by-platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-webhook-valid": {
+      "main": [
+        [
+          {
+            "node": "mark-video-processing-clips",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "log-invalid-webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "baixar-video": {
+      "main": [
+        [
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "lookup-video-by-project",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload file": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "69b8b7d4-5112-4077-a7ba-87a82bd2f8bc",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c3d3f13ed352c61f35d7efc01bb5827a02954c101fba4b81a06a074154529b66"
+  },
+  "id": "iN1yCxWRElHd8ykb2a9Lk",
+  "tags": []
+}

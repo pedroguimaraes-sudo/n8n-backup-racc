@@ -1,0 +1,333 @@
+{
+  "name": "[AGENT-3]-Video-Processing-Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "a3af3ff2-572b-4299-96dc-065c0c0c1d45",
+      "name": "schedule-trigger-15min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -5504,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  vp.id,\n  vp.plataforma,\n  vp.canal_id,\n  vp.video_id,\n  vp.url_video,\n  vp.titulo_original,\n  vp.duracao_segundos,\n  vp.nicho,\n  cd.nome_canal,\n  cd.tom_de_voz,\n  cd.nicho_alvo\nFROM videos_pendentes vp\nLEFT JOIN canais_descobertos cd ON cd.canal_id = vp.canal_id\nWHERE vp.status = 'pendente'\nORDER BY vp.id ASC\nLIMIT 5;",
+        "options": {}
+      },
+      "id": "2e5f6621-b7b6-4e45-9822-1540750b2114",
+      "name": "fetch-pending-videos",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -5280,
+        512
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "video-exists",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "655bdec3-98b9-478a-a7fa-c7b59740bc0a",
+      "name": "if-has-pending-videos",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -5056,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "6f9b7c70-6e9b-4adc-8db0-1548f01f3525",
+      "name": "loop-by-video",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -4832,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE videos_pendentes \nSET status = 'em_processamento'\nWHERE id = '{{ $json.id }}'\n  AND status = 'pendente';",
+        "options": {}
+      },
+      "id": "3f817a01-e594-4388-b57a-14fd35e46a01",
+      "name": "mark-video-processing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -4608,
+        416
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst videoData = $('loop-by-video').item.json;\n\nlet clips = [];\nlet engineUsada = '';\n\nif (input.clips && Array.isArray(input.clips)) {\n  if (input.clips[0]?.downloadUrl || input.clips[0]?.url) {\n    engineUsada = 'opusclip';\n    clips = input.clips.map((clip, idx) => ({\n      clip_url: clip.downloadUrl || clip.url || '',\n      transcricao: clip.transcript || '',\n      titulo_sugerido: clip.title || `Clip ${idx + 1}`,\n      duracao: clip.duration || 0,\n      score: clip.score || clip.viralScore || 0\n    }));\n  } else {\n    engineUsada = 'dumme';\n    clips = input.clips.map((clip, idx) => ({\n      clip_url: clip.video_url || clip.url || '',\n      transcricao: clip.transcription || '',\n      titulo_sugerido: clip.suggested_title || `Clip ${idx + 1}`,\n      duracao: clip.duration_seconds || 0,\n      score: clip.engagement_score || 0\n    }));\n  }\n} else if (input.results && Array.isArray(input.results)) {\n  engineUsada = 'dumme';\n  clips = input.results.map((clip, idx) => ({\n    clip_url: clip.video_url || clip.url || '',\n    transcricao: clip.transcription || '',\n    titulo_sugerido: clip.suggested_title || `Clip ${idx + 1}`,\n    duracao: clip.duration_seconds || 0,\n    score: clip.engagement_score || 0\n  }));\n}\n\nif (clips.length === 0) {\n  return [{ json: { has_clips: false } }];\n}\n\nconst sanitize = (s) => String(s || '').replace(/'/g, \"''\");\n\nreturn clips.map(clip => ({\n  json: {\n    has_clips: true,\n    clip_url: clip.clip_url,\n    transcricao: clip.transcricao,\n    titulo_sugerido: sanitize(clip.titulo_sugerido),\n    duracao: clip.duracao,\n    score: clip.score,\n    engine_usada: engineUsada,\n    video_origem_id: videoData.id,\n    video_id: videoData.video_id,\n    canal_id: videoData.canal_id,\n    nome_canal: sanitize(videoData.nome_canal || 'Canal'),\n    tom_de_voz: videoData.tom_de_voz || 'informativo e engajante',\n    nicho: videoData.nicho || videoData.nicho_alvo || 'geral',\n    titulo_original: sanitize(videoData.titulo_original || '')\n  }\n}));"
+      },
+      "id": "3798fdf9-1cea-4d30-b18c-2602bd2902d5",
+      "name": "normalize-clip-output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4160,
+        448
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "7ae2dc70-dd51-49a5-8cfb-e198382bde44",
+      "name": "no-pending-videos",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -4832,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COUNT(*) FILTER (WHERE status = 'concluido') AS videos_done,\n  COUNT(*) FILTER (WHERE status = 'erro') AS videos_error,\n  COUNT(*) FILTER (WHERE status = 'pendente') AS videos_remaining\nFROM videos_pendentes\nWHERE created_at >= NOW() - INTERVAL '1 day';",
+        "options": {}
+      },
+      "id": "ac4e0a19-73e7-4d05-ab99-d38b51320713",
+      "name": "fetch-pipeline-summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -4608,
+        224
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.submagic.co/v1/projects/magic-clips",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "sk-2079daff0c3f7f4e5ca9e6f6ef59fa2a90096bf21162b44055e54b0deedbf95e"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "title",
+              "value": "YT magic-clips test1"
+            },
+            {
+              "name": "language",
+              "value": "pt"
+            },
+            {
+              "name": "youtubeUrl",
+              "value": "={{ $('loop-by-video').item.json.url_video }}"
+            },
+            {
+              "name": "templateName",
+              "value": "Hormozi 2"
+            },
+            {
+              "name": "minClipLength",
+              "value": "15"
+            },
+            {
+              "name": "maxClipLength",
+              "value": "60"
+            },
+            {
+              "name": "faceTracking",
+              "value": "true"
+            },
+            {
+              "name": "webhookUrl",
+              "value": "https://webhook.racc.intentus.digital/webhook/764f26d4-444d-4d18-bf3c-265a535e851b"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "1807f6d0-5df9-41ec-ab0c-8229461caf54",
+      "name": "call-submagic-api",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -4384,
+        416
+      ],
+      "notes": "Videos under 30 minutes"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "schedule-trigger-15min": {
+      "main": [
+        [
+          {
+            "node": "fetch-pending-videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-pending-videos": {
+      "main": [
+        [
+          {
+            "node": "if-has-pending-videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-has-pending-videos": {
+      "main": [
+        [
+          {
+            "node": "loop-by-video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "no-pending-videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loop-by-video": {
+      "main": [
+        [
+          {
+            "node": "fetch-pipeline-summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "mark-video-processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "mark-video-processing": {
+      "main": [
+        [
+          {
+            "node": "call-submagic-api",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "normalize-clip-output": {
+      "main": [
+        [
+          {
+            "node": "loop-by-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "call-submagic-api": {
+      "main": [
+        [
+          {
+            "node": "normalize-clip-output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "executionTimeout": -1
+  },
+  "versionId": "5dab2c68-032f-475c-8197-5eb5a4c85676",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c3d3f13ed352c61f35d7efc01bb5827a02954c101fba4b81a06a074154529b66"
+  },
+  "id": "dSCCPtMw1ZK0LXv3m7aEd",
+  "tags": []
+}

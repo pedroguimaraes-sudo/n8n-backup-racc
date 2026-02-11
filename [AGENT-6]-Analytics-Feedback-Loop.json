@@ -1,0 +1,575 @@
+{
+  "name": "[AGENT-6]-Analytics-Feedback-Loop",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "051a76f9-89c7-4018-9217-9d4483cb8cf2",
+      "name": "schedule-trigger-daily",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1312,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  p.id AS publicacao_id,\n  p.clip_id,\n  p.plataforma,\n  p.id_publicacao_plataforma,\n  p.url_publicacao,\n  p.data_publicacao,\n  cg.titulo_final,\n  cg.engine_usada,\n  cg.video_origem_id,\n  vp.nicho,\n  vp.canal_id,\n  vp.duracao_segundos\nFROM publicacoes p\nJOIN clips_gerados cg ON cg.id = p.clip_id\nJOIN videos_pendentes vp ON vp.id = cg.video_origem_id\nWHERE p.status = 'publicado'\n  AND p.data_publicacao >= NOW() - INTERVAL '7 days'\n  AND p.plataforma = 'youtube'\n  AND p.id_publicacao_plataforma IS NOT NULL\n  AND p.id_publicacao_plataforma != 'pending'\nORDER BY p.data_publicacao DESC\nLIMIT 50;",
+        "options": {}
+      },
+      "id": "501258d6-d917-4c0d-a052-b66727e3c344",
+      "name": "fetch-recent-publications",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -1088,
+        656
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "has-publications",
+              "leftValue": "={{ $json.publicacao_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2a3b6b4f-c066-4e40-a7c3-d3c5d4a2dd73",
+      "name": "if-has-publications",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -864,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "2204f116-4792-4ef8-a4ef-271a2def6844",
+      "name": "loop-by-publication",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -640,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const pub = $json;\n\n// Check if we already collected metrics today for this publication\n// Build the video IDs for batch request\nreturn [{\n  json: {\n    ...pub,\n    youtube_video_id: pub.id_publicacao_plataforma\n  }\n}];"
+      },
+      "id": "34768a32-f57f-41d2-af83-f61a55c3f075",
+      "name": "prepare-analytics-request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://www.googleapis.com/youtube/v3/videos",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "statistics"
+            },
+            {
+              "name": "id",
+              "value": "={{ $json.youtube_video_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "010145fc-1719-4fb6-9262-54bba76d41a3",
+      "name": "call-youtube-statistics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -192,
+        560
+      ],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "7tGOJOcTH3PmmxRz",
+          "name": "[CRED]PEDRO-INTENTUS-EMAIL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const pubData = $('loop-by-publication').item.json;\nconst ytResponse = $json;\n\nconst stats = ytResponse.items?.[0]?.statistics || {};\n\nconst views = parseInt(stats.viewCount || '0', 10);\nconst likes = parseInt(stats.likeCount || '0', 10);\nconst comments = parseInt(stats.commentCount || '0', 10);\n// YouTube API doesn't expose shares directly\nconst shares = 0;\n\nreturn [{\n  json: {\n    publicacao_id: pubData.publicacao_id,\n    plataforma: pubData.plataforma,\n    views: views,\n    likes: likes,\n    comentarios: comments,\n    compartilhamentos: shares,\n    titulo_final: pubData.titulo_final,\n    engine_usada: pubData.engine_usada,\n    nicho: pubData.nicho,\n    duracao_segundos: pubData.duracao_segundos,\n    canal_id: pubData.canal_id,\n    engagement_rate: views > 0 ? (((likes + comments) / views) * 100).toFixed(2) : '0.00',\n    has_stats: views > 0 || likes > 0\n  }\n}];"
+      },
+      "id": "4e4b636b-f0b5-4ff9-b274-aceb5e2aceea",
+      "name": "parse-youtube-metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO metricas_publicacao (\n  publicacao_id,\n  plataforma,\n  views,\n  likes,\n  comentarios,\n  compartilhamentos,\n  data_coleta\n) VALUES (\n  {{ $json.publicacao_id }},\n  '{{ $json.plataforma }}',\n  {{ $json.views }},\n  {{ $json.likes }},\n  {{ $json.comentarios }},\n  {{ $json.compartilhamentos }},\n  NOW()\n);",
+        "options": {}
+      },
+      "id": "2bceb964-09f3-4581-a1e1-b7e5286c5d6f",
+      "name": "save-metrics-to-db",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        256,
+        592
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COUNT(DISTINCT mp.publicacao_id) AS total_tracked,\n  COALESCE(SUM(mp.views), 0) AS total_views,\n  COALESCE(SUM(mp.likes), 0) AS total_likes,\n  COALESCE(SUM(mp.comentarios), 0) AS total_comments\nFROM metricas_publicacao mp\nWHERE mp.data_coleta >= NOW() - INTERVAL '1 day';",
+        "options": {}
+      },
+      "id": "a249744e-85bd-412e-8bd7-9bc5df6a2b1a",
+      "name": "fetch-daily-summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -416,
+        208
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = new Date();\nconst dayOfWeek = today.getDay();\n// Run weekly insights on Sunday (0) or Monday (1)\nconst isWeeklyDay = dayOfWeek === 1;\n\nreturn [{\n  json: {\n    ...$json,\n    is_weekly: isWeeklyDay,\n    current_day: dayOfWeek\n  }\n}];"
+      },
+      "id": "5d618ce8-8d4b-4c27-a141-5f4930be516a",
+      "name": "check-if-weekly-day",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "is-monday",
+              "leftValue": "={{ $json.is_weekly }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f852f29a-606c-413d-a884-1d64ad2a6612",
+      "name": "if-weekly-insights-day",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        32,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH latest_metrics AS (\n  SELECT DISTINCT ON (mp.publicacao_id)\n    mp.publicacao_id,\n    mp.views,\n    mp.likes,\n    mp.comentarios,\n    mp.compartilhamentos,\n    p.plataforma,\n    p.data_publicacao,\n    cg.titulo_final,\n    cg.engine_usada,\n    cg.hashtags,\n    vp.nicho,\n    vp.duracao_segundos,\n    CASE WHEN mp.views > 0 \n      THEN ROUND(((mp.likes + mp.comentarios)::numeric / mp.views) * 100, 2)\n      ELSE 0 \n    END AS engagement_rate\n  FROM metricas_publicacao mp\n  JOIN publicacoes p ON p.id = mp.publicacao_id\n  JOIN clips_gerados cg ON cg.id = p.clip_id\n  JOIN videos_pendentes vp ON vp.id = cg.video_origem_id\n  WHERE mp.data_coleta >= NOW() - INTERVAL '7 days'\n  ORDER BY mp.publicacao_id, mp.data_coleta DESC\n)\nSELECT * FROM (\n  (SELECT 'top' AS categoria, * FROM latest_metrics ORDER BY views DESC LIMIT 10)\n  UNION ALL\n  (SELECT 'flop' AS categoria, * FROM latest_metrics ORDER BY views ASC LIMIT 10)\n) combined\nORDER BY categoria, views DESC;",
+        "options": {}
+      },
+      "id": "9bfad639-1595-4099-af6c-2208fc0b3a27",
+      "name": "fetch-top-and-flop",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        256,
+        176
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(item => item.json);\n\nconst tops = rows.filter(r => r.categoria === 'top');\nconst flops = rows.filter(r => r.categoria === 'flop');\n\nconst formatRow = (r) => \n  `- \"${r.titulo_final}\" | nicho: ${r.nicho} | engine: ${r.engine_usada} | views: ${r.views} | likes: ${r.likes} | comments: ${r.comentarios} | engagement: ${r.engagement_rate}% | duracao: ${Math.round((r.duracao_segundos || 0) / 60)}min`;\n\nconst report = `## RELATÓRIO SEMANAL DE PERFORMANCE\\n\\n### TOP 10 (mais views):\\n${tops.map(formatRow).join('\\n')}\\n\\n### FLOP 10 (menos views):\\n${flops.map(formatRow).join('\\n')}`;\n\nreturn [{ json: { report, total_analyzed: rows.length } }];"
+      },
+      "id": "a9862c95-f885-4aca-82a0-39774bb689aa",
+      "name": "build-weekly-report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "kimi-k2.5:cloud",
+          "mode": "list",
+          "cachedResultName": "kimi-k2.5:cloud"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "Você é um analista de dados especializado em conteúdo de vídeo curto (Shorts, Reels, TikTok).\n\nAnalise o relatório semanal e gere insights acionáveis.\n\nRetorne um JSON com:\n{\n  \"resumo_geral\": \"2-3 frases sobre a semana\",\n  \"nichos_promissores\": [\"nicho1\", \"nicho2\"],\n  \"padroes_titulo\": \"o que os títulos top têm em comum\",\n  \"padroes_duracao\": \"faixas de duração que performam melhor\",\n  \"engine_performance\": \"qual engine gera mais engajamento\",\n  \"recomendacoes\": [\"ação 1\", \"ação 2\", \"ação 3\"],\n  \"score_semana\": 0.0\n}",
+              "role": "assistant"
+            },
+            {
+              "content": "={{ $json.report }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "id": "a31cb988-d50f-4e96-af4f-0dc67ba764eb",
+      "name": "ai-generate-weekly-insights",
+      "type": "@n8n/n8n-nodes-langchain.ollama",
+      "typeVersion": 1,
+      "position": [
+        704,
+        176
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "EsLqiLqqKwvsG3qM",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiRaw = $input.first().json;\nconst report = $('build-weekly-report').item.json.report;\n\nlet insights = {};\ntry {\n  if (aiRaw.text) {\n    insights = JSON.parse(aiRaw.text.replace(/```json\\n?|```\\n?/g, '').trim());\n  } else if (aiRaw.output) {\n    insights = typeof aiRaw.output === 'string' ? JSON.parse(aiRaw.output) : aiRaw.output;\n  } else if (aiRaw.resumo_geral) {\n    insights = aiRaw;\n  }\n} catch (e) {\n  insights = {\n    resumo_geral: 'Erro ao processar insights',\n    recomendacoes: []\n  };\n}\n\nconst sanitize = (s) => String(s || '').replace(/'/g, \"''\");\n\nreturn [{\n  json: {\n    insights_json: sanitize(JSON.stringify(insights)),\n    resumo_geral: sanitize(insights.resumo_geral || ''),\n    nichos_promissores: sanitize(JSON.stringify(insights.nichos_promissores || [])),\n    recomendacoes: sanitize(JSON.stringify(insights.recomendacoes || [])),\n    score_semana: insights.score_semana || 0,\n    report_raw: sanitize(report)\n  }\n}];"
+      },
+      "id": "878cb2c3-ba6f-426e-8d16-83ace8d9515b",
+      "name": "parse-insights-response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO insights_semanais (\n  semana_ref,\n  resumo_geral,\n  nichos_promissores,\n  recomendacoes,\n  score_semana,\n  insights_completo,\n  report_raw,\n  created_at\n) VALUES (\n  DATE_TRUNC('week', NOW()),\n  '{{ $json.resumo_geral }}',\n  '{{ $json.nichos_promissores }}'::jsonb,\n  '{{ $json.recomendacoes }}'::jsonb,\n  {{ $json.score_semana }},\n  '{{ $json.insights_json }}'::jsonb,\n  '{{ $json.report_raw }}',\n  NOW()\n);",
+        "options": {}
+      },
+      "id": "3faedbcb-b73b-40b6-81da-5f148a0b8c62",
+      "name": "save-weekly-insights",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1280,
+        176
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "b2211df0-c5e6-43e3-b027-5ee5ccd6a532",
+      "name": "no-publications-found",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        736
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "fc55aeeb-d65f-4465-954a-140dfdc4d69c",
+      "name": "skip-weekly-insights",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        256,
+        368
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "schedule-trigger-daily": {
+      "main": [
+        [
+          {
+            "node": "fetch-recent-publications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-recent-publications": {
+      "main": [
+        [
+          {
+            "node": "if-has-publications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-has-publications": {
+      "main": [
+        [
+          {
+            "node": "loop-by-publication",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "no-publications-found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loop-by-publication": {
+      "main": [
+        [
+          {
+            "node": "fetch-daily-summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "prepare-analytics-request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-analytics-request": {
+      "main": [
+        [
+          {
+            "node": "call-youtube-statistics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "call-youtube-statistics": {
+      "main": [
+        [
+          {
+            "node": "parse-youtube-metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-youtube-metrics": {
+      "main": [
+        [
+          {
+            "node": "save-metrics-to-db",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "save-metrics-to-db": {
+      "main": [
+        [
+          {
+            "node": "loop-by-publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-daily-summary": {
+      "main": [
+        [
+          {
+            "node": "check-if-weekly-day",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check-if-weekly-day": {
+      "main": [
+        [
+          {
+            "node": "if-weekly-insights-day",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-weekly-insights-day": {
+      "main": [
+        [
+          {
+            "node": "fetch-top-and-flop",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "skip-weekly-insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-top-and-flop": {
+      "main": [
+        [
+          {
+            "node": "build-weekly-report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "build-weekly-report": {
+      "main": [
+        [
+          {
+            "node": "ai-generate-weekly-insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai-generate-weekly-insights": {
+      "main": [
+        [
+          {
+            "node": "parse-insights-response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-insights-response": {
+      "main": [
+        [
+          {
+            "node": "save-weekly-insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "d0f0247e-6461-4fce-8513-92a76d2e9a04",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c3d3f13ed352c61f35d7efc01bb5827a02954c101fba4b81a06a074154529b66"
+  },
+  "id": "6XjglPSp0uaGf7W_rZNrE",
+  "tags": []
+}

@@ -1,0 +1,527 @@
+{
+  "name": "[AGENT-1]-Channel-Scout",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "9f9cc29a-66d5-43f5-ad38-c5a7d13f5f45",
+      "name": "schedule-trigger-daily",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        1184,
+        2144
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, nome, slug, keywords, idioma \nFROM nichos \nWHERE ativo = true\nAND nome = 'Tecnologia';\n",
+        "options": {}
+      },
+      "id": "37f0b113-ceae-4e5a-9daa-7bda0fe8871a",
+      "name": "fetch-active-niches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1408,
+        2144
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "5e823d67-85c9-47ba-bc47-8dbd8adfb64c",
+      "name": "loop-by-niche",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1632,
+        2144
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COALESCE(string_agg(cd.nome_canal, ', '), 'nenhum canal conhecido ainda') as known_channels,\n  n.id as nicho_id,\n  n.nome,\n  n.slug,\n  n.keywords,\n  n.idioma\nFROM nichos n\nLEFT JOIN canais_descobertos cd\n  ON cd.nicho_alvo = n.slug\n  AND cd.plataforma = 'youtube'\nWHERE n.slug = '{{ $json.slug }}'\nGROUP BY n.id, n.nome, n.slug, n.keywords, n.idioma;",
+        "options": {}
+      },
+      "id": "5aee0043-7757-4e64-b12a-437a65f482fb",
+      "name": "fetch-known-channels",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1856,
+        2016
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-3-flash-preview:latest",
+          "mode": "list",
+          "cachedResultName": "gemini-3-flash-preview:latest"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a YouTube channel research expert with deep knowledge of the YouTube ecosystem across many niches and languages. Your job is to suggest REAL YouTube channels that actually exist and are active.\n\nCRITICAL RULES:\n- Only suggest channels you are CONFIDENT actually exist on YouTube right now\n- Provide the EXACT channel name as it appears on YouTube\n- Include the YouTube handle (@handle) when you know it\n- Mix channel sizes: large (>500k subs), medium (100k-500k), and emerging (10k-100k)\n- Focus on channels with frequent uploads and good engagement\n- Prefer channels that produce long-form content suitable for clips/shorts repurposing\n- DO NOT invent or hallucinate channel names\n- If you are not sure a channel exists, DO NOT include it\n\nReturn ONLY a valid JSON array with no markdown formatting, no backticks, no extra text:\n[\n  {\"channel_name\": \"Exact Channel Name\", \"handle\": \"@handle_or_empty\", \"estimated_subs\": \"100k\", \"content_style\": \"educational\", \"reason\": \"brief reason why good for repurposing\"},\n  ...\n]",
+              "role": "assistant"
+            },
+            {
+              "content": "=Search and suggest 15 to 20 real YouTube channels for the niche: \"{{ $json.nome }}\"\n\nNiche keywords: {{ JSON.stringify($json.keywords || []) }}\nPreferred language/region: {{ $json.idioma || 'pt-BR' }}\n\nChannels ALREADY discovered (DO NOT suggest these again):\n{{ $json.known_channels }}\n\nSuggest channels that are excellent sources for creating clips, shorts, and repurposed content in this niche. Include a mix of popular and emerging channels. Return ONLY the JSON array, nothing else.\n\n## tool mandatory *get_channels*##\n "
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "52e72b48-6e88-4c38-b19d-ec7fe5350e85",
+      "name": "ai-discover-channels",
+      "type": "@n8n/n8n-nodes-langchain.ollama",
+      "typeVersion": 1,
+      "position": [
+        2288,
+        1936
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "EsLqiLqqKwvsG3qM",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the AI discovery response to extract channel suggestions\nconst aiRaw = $input.first().json;\nconst sd = $getWorkflowStaticData('global');\nconst nichoData = sd.currentNiche || {};\n\nlet text = '';\nif (typeof aiRaw === 'string') text = aiRaw;\nelse if (aiRaw.text) text = aiRaw.text;\nelse if (aiRaw.output) text = typeof aiRaw.output === 'string' ? aiRaw.output : JSON.stringify(aiRaw.output);\nelse if (aiRaw.message?.content) text = aiRaw.message.content;\nelse if (aiRaw.response) text = aiRaw.response;\nelse if (aiRaw.content) text = typeof aiRaw.content === 'string' ? aiRaw.content : JSON.stringify(aiRaw.content);\nelse text = JSON.stringify(aiRaw);\n\n// Clean markdown formatting\ntext = text.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n\nlet channels = [];\n\ntry {\n  const parsed = JSON.parse(text);\n  if (Array.isArray(parsed)) {\n    channels = parsed;\n  } else if (parsed.channels && Array.isArray(parsed.channels)) {\n    channels = parsed.channels;\n  } else if (parsed.results && Array.isArray(parsed.results)) {\n    channels = parsed.results;\n  }\n} catch (e) {\n  // Try finding a JSON array in the text\n  const arrayMatch = text.match(/\\[\\s*\\{[\\s\\S]*\\}\\s*\\]/);\n  if (arrayMatch) {\n    try {\n      channels = JSON.parse(arrayMatch[0]);\n    } catch (e2) {\n      // Regex fallback: extract channel names line by line\n      const lines = text.split('\\n');\n      for (const line of lines) {\n        const nameMatch = line.match(/channel_name[^:]*:\\s*['\"]([^'\"]+)['\"]/i);\n        if (nameMatch) {\n          channels.push({ channel_name: nameMatch[1].trim(), handle: '' });\n        }\n      }\n    }\n  }\n}\n\nif (channels.length === 0) {\n  return [{ json: { has_channels: false, nicho_slug: nichoData.slug } }];\n}\n\n// Deduplicate by channel name (case-insensitive)\nconst seen = new Set();\nconst unique = channels.filter(ch => {\n  const name = (ch.channel_name || ch.name || '').toLowerCase().trim();\n  if (!name || seen.has(name)) return false;\n  seen.add(name);\n  return true;\n});\n\nreturn unique.map(ch => ({\n  json: {\n    channel_name: (ch.channel_name || ch.name || '').trim(),\n    handle: (ch.handle || '').trim(),\n    estimated_subs: ch.estimated_subs || 'unknown',\n    content_style: ch.content_style || '',\n    reason: ch.reason || '',\n    nicho_id: nichoData.nicho_id,\n    nicho_slug: nichoData.slug,\n    nicho_nome: nichoData.nome,\n    idioma: nichoData.idioma || 'pt-BR',\n    lang: (nichoData.idioma || 'pt-BR').split('-')[0],\n    region: nichoData.idioma === 'pt-BR' ? 'BR' : (nichoData.idioma === 'pt-PT' ? 'PT' : 'US'),\n    has_channels: true\n  }\n}));"
+      },
+      "id": "4f12cf13-03e5-4599-a8d2-989c1e16e0ae",
+      "name": "parse-channel-suggestions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2656,
+        2016
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "check-has-channels",
+              "leftValue": "={{ $json.has_channels }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "beb29c5c-0330-44a5-8f04-26870b02ffc2",
+      "name": "if-has-suggestions",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2880,
+        2016
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "a8b65bf5-024d-4ecd-b4ba-7e24ddb22efe",
+      "name": "loop-by-channel-name",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        3104,
+        2144
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-3-flash-preview:latest",
+          "mode": "list",
+          "cachedResultName": "gemini-3-flash-preview:latest"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a YouTube channel evaluator for content repurposing. Be RIGOROUS and objective.\n\nReturn ONLY valid JSON (no markdown, no backticks, no extra text) with these fields:\n{\n  \"score\": 0.0-1.0,\n  \"relevancia\": \"alta|media|baixa\",\n  \"tom_de_voz\": \"informativo|educativo|entretenimento|motivacional|tecnico|humoristico\",\n  \"justificativa\": \"max 50 words\",\n  \"recomendacao\": \"monitorar|acompanhar|ignorar\"\n}\n\nScoring rules:\n- Channels with >500k subscribers in the right niche: score >= 0.85\n- Channels with >100k subscribers in the right niche: score >= 0.75\n- Channels with >10k subscribers in the right niche: score >= 0.65\n- If niche relevance is weak: score <= 0.55\n- score >= 0.70 means APPROVED for monitoring",
+              "role": "assistant"
+            },
+            {
+              "content": "=Evaluate this channel for the niche \"{{ $json.nicho_nome }}\".\n\nChannel data:\n- Name: {{ $json.channel_name }}\n- Handle: {{ $json.handle }}\n- Estimated Subscribers: {{ $json.estimated_subs }}\n- Content Style: {{ $json.content_style }}\n- Discovery Reason: {{ $json.reason }}\n\nRespond with ONLY the JSON object, nothing else."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "4451f0b5-6915-45f2-8acb-81fe45ff9758",
+      "name": "ai-evaluate-channel",
+      "type": "@n8n/n8n-nodes-langchain.ollama",
+      "typeVersion": 1,
+      "position": [
+        3552,
+        2080
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "EsLqiLqqKwvsG3qM",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI evaluation and merge with channel suggestion data\nconst sd = $getWorkflowStaticData('global');\nconst suggData = sd.currentChannelSuggestion || {};\nconst aiRaw = $input.first().json;\n\nfunction parseSubCount(text) {\n  if (!text) return 0;\n  text = String(text).trim().toLowerCase();\n  const match = text.match(/([\\d][\\d.,]*)\\s*(mil|mi|m|bi|b|k)?/i);\n  if (!match) return 0;\n  let numStr = match[1].replace(/,/g, '.');\n  let num = parseFloat(numStr);\n  if (isNaN(num)) return 0;\n  const suffix = (match[2] || '').toLowerCase();\n  if (suffix === 'm' || suffix === 'mi') num *= 1000000;\n  else if (suffix === 'k' || suffix === 'mil') num *= 1000;\n  else if (suffix === 'b' || suffix === 'bi') num *= 1000000000;\n  return Math.round(num);\n}\n\nlet score = 0.5;\nlet tomDeVoz = 'informativo';\n\ntry {\n  let text = '';\n  if (typeof aiRaw === 'string') text = aiRaw;\n  else if (aiRaw.text) text = aiRaw.text;\n  else if (aiRaw.output) text = typeof aiRaw.output === 'string' ? aiRaw.output : JSON.stringify(aiRaw.output);\n  else if (aiRaw.message?.content) text = aiRaw.message.content;\n  else if (aiRaw.response) text = aiRaw.response;\n  else if (aiRaw.content) text = typeof aiRaw.content === 'string' ? aiRaw.content : JSON.stringify(aiRaw.content);\n  else text = JSON.stringify(aiRaw);\n\n  text = text.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n\n  const jsonMatch = text.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    const parsed = JSON.parse(jsonMatch[0]);\n    if (parsed.score !== undefined) {\n      score = parseFloat(parsed.score);\n      if (isNaN(score)) score = 0.5;\n    }\n    if (parsed.tom_de_voz) tomDeVoz = parsed.tom_de_voz;\n  } else {\n    const scoreMatch = text.match(/score[^:]*:\\s*(\\d+\\.?\\d*)/i);\n    if (scoreMatch) {\n      score = parseFloat(scoreMatch[1]);\n      if (isNaN(score)) score = 0.5;\n    }\n  }\n} catch (e) {\n  const subs = parseSubCount(suggData.estimated_subs);\n  if (subs >= 500000) score = 0.85;\n  else if (subs >= 100000) score = 0.78;\n  else if (subs >= 50000) score = 0.72;\n  else if (subs >= 10000) score = 0.65;\n  else score = 0.4;\n}\n\nscore = Math.min(1, Math.max(0, score));\n\nfunction pgSanitize(str, maxLen) {\n  let s = String(str || '');\n  s = s.replace(/\\\\/g, '\\\\\\\\');\n  s = s.replace(/'/g, \"''\");\n  s = s.replace(/\\x00/g, '');\n  if (maxLen) s = s.substring(0, maxLen);\n  return s;\n}\n\nconst finalScore = Math.round(parseFloat(score || 0.5) * 100) / 100;\n\n// Construct canal_id from handle or channel_name\nlet canalId = (suggData.handle || '').replace(/^@/, '').trim();\nif (!canalId) {\n  canalId = (suggData.channel_name || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '-').substring(0, 50);\n}\n\nconst inscritos = parseSubCount(suggData.estimated_subs);\nconst urlCanal = suggData.handle ? 'https://youtube.com/' + suggData.handle : '';\n\nreturn [{\n  json: {\n    canal_id: pgSanitize(canalId, 50),\n    nome_canal: pgSanitize(suggData.channel_name, 200),\n    url_canal: pgSanitize(urlCanal, 500),\n    nicho_slug: pgSanitize(suggData.nicho_slug, 100),\n    inscritos: inscritos,\n    total_videos: 0,\n    total_views: 0,\n    views_por_video: 0,\n    score: finalScore,\n    tom_de_voz: pgSanitize(tomDeVoz, 100),\n    is_approved: finalScore >= 0.7\n  }\n}];"
+      },
+      "id": "acef49e9-7d2d-47b9-97a8-edeb7c779164",
+      "name": "parse-ai-evaluation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3904,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO canais_descobertos (\n  plataforma, canal_id, nome_canal, url_canal, nicho_alvo,\n  inscritos, views_medio_aproximado, total_videos, total_views,\n  tom_de_voz, score, ativo, data_ultima_analise\n) VALUES (\n  'youtube',\n  '{{ $json.canal_id }}',\n  '{{ $json.nome_canal }}',\n  '{{ $json.url_canal }}',\n  '{{ $json.nicho_slug }}',\n  COALESCE(NULLIF('{{ $json.inscritos }}', '')::INTEGER, 0),\n  COALESCE(NULLIF('{{ $json.views_por_video }}', '')::INTEGER, 0),\n  COALESCE(NULLIF('{{ $json.total_videos }}', '')::INTEGER, 0),\n  COALESCE(NULLIF('{{ $json.total_views }}', '')::BIGINT, 0),\n  '{{ $json.tom_de_voz }}',\n  COALESCE(NULLIF('{{ $json.score }}', '')::DECIMAL(3,2), 0.00),\n  CASE WHEN '{{ $json.is_approved }}' = 'true' THEN true ELSE false END,\n  NOW()\n)\nON CONFLICT (plataforma, canal_id)\nDO UPDATE SET\n  nome_canal = EXCLUDED.nome_canal,\n  inscritos = EXCLUDED.inscritos,\n  views_medio_aproximado = EXCLUDED.views_medio_aproximado,\n  total_videos = EXCLUDED.total_videos,\n  total_views = EXCLUDED.total_views,\n  score = EXCLUDED.score,\n  tom_de_voz = EXCLUDED.tom_de_voz,\n  ativo = EXCLUDED.ativo,\n  data_ultima_analise = NOW()\nRETURNING canal_id, nome_canal, score;",
+        "options": {}
+      },
+      "id": "f4c7b517-659a-4efa-b8a7-14011978d377",
+      "name": "upsert-channel-db",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4128,
+        2144
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// No channel suggestions from AI - skip to next niche\nreturn [{ json: { skipped: true, reason: 'no_ai_suggestions' } }];"
+      },
+      "id": "0389aba4-c7d9-4189-9342-df837a713daf",
+      "name": "skip-no-suggestions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3104,
+        2336
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COUNT(*) as total_analisados,\n  COUNT(*) FILTER (WHERE ativo = true) as aprovados,\n  COUNT(*) FILTER (WHERE score >= 0.8) as top_canais,\n  ROUND(AVG(score)::numeric, 2) as score_medio\nFROM canais_descobertos\nWHERE data_ultima_analise >= NOW() - INTERVAL '1 day';",
+        "options": {}
+      },
+      "id": "9f039e59-2321-41ff-827b-288d060e21ec",
+      "name": "fetch-daily-summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1856,
+        1824
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store current niche context in staticData for downstream nodes\nconst sd = $getWorkflowStaticData('global');\nsd.currentNiche = {\n  nicho_id: $json.nicho_id,\n  nome: $json.nome,\n  slug: $json.slug,\n  keywords: $json.keywords,\n  idioma: $json.idioma,\n  known_channels: $json.known_channels\n};\nreturn $input.all();"
+      },
+      "id": "8e34bae3-6053-4982-8bfc-e3471662c200",
+      "name": "store-niche-context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        2016
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store current channel suggestion in staticData before HTTP request breaks the chain\nconst sd = $getWorkflowStaticData('global');\nsd.currentChannelSuggestion = {\n  channel_name: $json.channel_name,\n  handle: $json.handle || '',\n  estimated_subs: $json.estimated_subs || 'unknown',\n  content_style: $json.content_style || '',\n  reason: $json.reason || '',\n  nicho_id: $json.nicho_id,\n  nicho_slug: $json.nicho_slug,\n  nicho_nome: $json.nicho_nome,\n  idioma: $json.idioma || 'pt-BR',\n  lang: $json.lang || 'pt',\n  region: $json.region || 'BR',\n  has_channels: $json.has_channels\n};\nreturn $input.all();"
+      },
+      "id": "3e4324d4-6d01-4171-a177-84c15f1780e8",
+      "name": "store-channel-suggestion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3328,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('URL', ``, 'string') }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        2384,
+        2240
+      ],
+      "id": "bb3d7b43-d5d4-4c39-a51c-b1df39311fdc",
+      "name": "get_channels"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "schedule-trigger-daily": {
+      "main": [
+        [
+          {
+            "node": "fetch-active-niches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-active-niches": {
+      "main": [
+        [
+          {
+            "node": "loop-by-niche",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loop-by-niche": {
+      "main": [
+        [
+          {
+            "node": "fetch-daily-summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "fetch-known-channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-known-channels": {
+      "main": [
+        [
+          {
+            "node": "store-niche-context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai-discover-channels": {
+      "main": [
+        [
+          {
+            "node": "parse-channel-suggestions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-channel-suggestions": {
+      "main": [
+        [
+          {
+            "node": "if-has-suggestions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-has-suggestions": {
+      "main": [
+        [
+          {
+            "node": "loop-by-channel-name",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "skip-no-suggestions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "skip-no-suggestions": {
+      "main": [
+        [
+          {
+            "node": "loop-by-niche",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loop-by-channel-name": {
+      "main": [
+        [
+          {
+            "node": "loop-by-niche",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "store-channel-suggestion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai-evaluate-channel": {
+      "main": [
+        [
+          {
+            "node": "parse-ai-evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-ai-evaluation": {
+      "main": [
+        [
+          {
+            "node": "upsert-channel-db",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "upsert-channel-db": {
+      "main": [
+        [
+          {
+            "node": "loop-by-channel-name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-niche-context": {
+      "main": [
+        [
+          {
+            "node": "ai-discover-channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-channel-suggestion": {
+      "main": [
+        [
+          {
+            "node": "ai-evaluate-channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_channels": {
+      "ai_tool": [
+        [
+          {
+            "node": "ai-discover-channels",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "6500b75c-fcb6-4800-981a-9bb2366db24f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c3d3f13ed352c61f35d7efc01bb5827a02954c101fba4b81a06a074154529b66"
+  },
+  "id": "Fp0WiTiezhLfI56D",
+  "tags": []
+}

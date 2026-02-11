@@ -1,0 +1,723 @@
+{
+  "name": "[AGENT-2]-Content-Hunter",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "f9764945-a7b1-45d0-8459-f02d6a5a7087",
+      "name": "loop-by-video",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        10848,
+        5968
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "min-views-10k",
+              "leftValue": "={{ $json.views }}",
+              "rightValue": 1000,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "min-duration-2min",
+              "leftValue": "={{ $json.duracao_segundos }}",
+              "rightValue": 120,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2cada0ea-d716-446e-8e97-b74f2d942b00",
+      "name": "if-high-engagement-video",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        11072,
+        5728
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT EXISTS(\n  SELECT 1 FROM videos_pendentes\n  WHERE plataforma = 'youtube'\n    AND video_id = '{{ $json.video_id }}'\n) AS already_exists;",
+        "options": {}
+      },
+      "id": "28b052af-2937-4329-8fe6-695b731080c0",
+      "name": "check-video-exists",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        11520,
+        5584
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "is-new-video",
+              "leftValue": "={{ $json.already_exists }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c2b76a77-60a8-41d9-a726-500cda9dd022",
+      "name": "if-is-new-video",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        11744,
+        5584
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO videos_pendentes (\n  plataforma, canal_id, video_id, url_video,\n  titulo_original, duracao_segundos, nicho, status,\n  views, likes, comentarios, engagement_pct, thumbnail_url\n) VALUES (\n  'youtube',\n  '{{ $json.canal_id }}',\n  '{{ $json.video_id }}',\n  '{{ $json.url_video }}',\n  '{{ $json.titulo }}',\n  COALESCE(NULLIF('{{ $json.duracao_segundos }}', '')::INTEGER, 0),\n  '{{ $json.nicho }}',\n  'pendente',\n  COALESCE(NULLIF('{{ $json.views }}', '')::INTEGER, 0),\n  COALESCE(NULLIF('{{ $json.likes }}', '')::INTEGER, 0),\n  COALESCE(NULLIF('{{ $json.comentarios }}', '')::INTEGER, 0),\n  COALESCE(NULLIF('{{ $json.engagement_pct }}', '')::DECIMAL, 0),\n  '{{ $json.thumbnail }}'\n)\nON CONFLICT (video_id) DO NOTHING\nRETURNING id;",
+        "options": {}
+      },
+      "id": "750629e3-e512-4f2d-868d-2f25fba01d21",
+      "name": "insert-new-video",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        12192,
+        5808
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "f6c216df-9f34-4784-868a-621fa2cb14e5",
+      "name": "skip-existing-video",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        11968,
+        5680
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f63c03a9-7484-4709-bb71-5fe0ea916e2a",
+      "name": "skip-low-engagement",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        11296,
+        5776
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COUNT(*) as total_novos_videos,\n  COUNT(*) FILTER (WHERE status = 'pendente') as pendentes\nFROM videos_pendentes\nWHERE created_at >= NOW() - INTERVAL '1 day';",
+        "options": {}
+      },
+      "id": "3ca2f07b-d770-4fc5-bd40-b73dfac57a5b",
+      "name": "fetch-collection-summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        9824,
+        5632
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// No videos found for this channel, skip to next\nreturn [{ json: { skipped: true } }];"
+      },
+      "id": "3a0557de-1a98-42c3-a829-cc7c5d0beca8",
+      "name": "skip-no-videos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10848,
+        6160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store current channel context in staticData for downstream nodes\nconst sd = $getWorkflowStaticData('global');\nsd.currentChannel = {\n  canal_id: $json.canal_id,\n  nicho_alvo: $json.nicho_alvo,\n  nome_canal: $json.nome_canal\n};\nreturn $input.all();"
+      },
+      "id": "b2deb609-cee8-4653-83c5-eb36c10288a7",
+      "name": "store-channel-context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9824,
+        5824
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store enriched video data in staticData before Postgres query breaks the chain\nconst sd = $getWorkflowStaticData('global');\nsd.currentEnrichedVideo = { ...$json };\nreturn $input.all();"
+      },
+      "id": "c3ea041d-a88d-4abf-8db0-09b6e12a3171",
+      "name": "store-enriched-video",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11296,
+        5584
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Retrieve enriched video data from staticData\nconst sd = $getWorkflowStaticData('global');\nconst video = sd.currentEnrichedVideo || {};\nreturn [{ json: { ...video } }];"
+      },
+      "id": "5c22dccf-d5c4-4803-ac36-327d0f12bb0c",
+      "name": "prepare-insert-data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11968,
+        5488
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-3-flash-preview:latest",
+          "mode": "list",
+          "cachedResultName": "gemini-3-flash-preview:latest"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a YouTube video research expert. Your job is to list REAL videos that actually exist on YouTube channels.\n\nCRITICAL RULES:\n- Only list videos you are CONFIDENT actually exist on this channel\n- Provide the EXACT video title as it appears on YouTube\n- Provide the REAL YouTube video ID (the 11-character code from the URL after ?v=)\n- If you do NOT know the exact video ID, use \"UNKNOWN\" as video_id\n- Estimate views, likes, and comments based on your knowledge\n- Estimate duration in seconds\n- Focus on the most popular/viral videos from the last 6 months\n- DO NOT invent or hallucinate video titles or IDs\n\nReturn ONLY a valid JSON array with no markdown, no backticks:\n[\n  {\"title\": \"Exact Video Title\", \"video_id\": \"xxxxxxxxxxx\", \"views\": 50000, \"likes\": 2000, \"comments\": 300, \"duration_seconds\": 600, \"thumbnail\": \"\"},\n  ...\n]",
+              "role": "assistant"
+            },
+            {
+              "content": "=List the 10 best and most popular recent videos from the YouTube channel \"{{ $json.nome_canal }}\".\n\nChannel ID: {{ $json.canal_id }}\nNiche: {{ $json.nicho_alvo }}\n\nFocus on videos with high views and engagement. Only include videos you are sure exist. Return ONLY the JSON array, nothing else.\n\ntool mandatory get_videos"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "82530170-2611-4c7f-b789-fc20009caf02",
+      "name": "ai-find-videos",
+      "type": "@n8n/n8n-nodes-langchain.ollama",
+      "typeVersion": 1,
+      "position": [
+        10048,
+        5824
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "EsLqiLqqKwvsG3qM",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse LLM video suggestions for the current channel\nconst sd = $getWorkflowStaticData('global');\nconst canalInfo = sd.currentChannel || {};\nconst aiRaw = $input.first().json;\n\nfunction sanitize(str) {\n  let s = String(str || '');\n  s = s.replace(/\\\\/g, '\\\\\\\\');\n  s = s.replace(/'/g, \"''\");\n  s = s.replace(/\\x00/g, '');\n  return s;\n}\n\nlet text = '';\nif (typeof aiRaw === 'string') text = aiRaw;\nelse if (aiRaw.text) text = aiRaw.text;\nelse if (aiRaw.output) text = typeof aiRaw.output === 'string' ? aiRaw.output : JSON.stringify(aiRaw.output);\nelse if (aiRaw.message?.content) text = aiRaw.message.content;\nelse if (aiRaw.response) text = aiRaw.response;\nelse if (aiRaw.content) text = typeof aiRaw.content === 'string' ? aiRaw.content : JSON.stringify(aiRaw.content);\nelse text = JSON.stringify(aiRaw);\n\ntext = text.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n\nlet videos = [];\ntry {\n  const parsed = JSON.parse(text);\n  if (Array.isArray(parsed)) videos = parsed;\n  else if (parsed.videos) videos = parsed.videos;\n  else if (parsed.results) videos = parsed.results;\n} catch (e) {\n  const arrayMatch = text.match(/\\[\\s*\\{[\\s\\S]*\\}\\s*\\]/);\n  if (arrayMatch) {\n    try { videos = JSON.parse(arrayMatch[0]); } catch (e2) {}\n  }\n}\n\n// Filter out videos with unknown IDs and deduplicate\nconst seen = new Set();\nconst validVideos = videos.filter(function(v) {\n  const vid = v.video_id || '';\n  if (!vid || vid === 'UNKNOWN' || vid.length < 5 || seen.has(vid)) return false;\n  seen.add(vid);\n  return true;\n});\n\nif (validVideos.length === 0) {\n  return [{ json: { has_videos: false } }];\n}\n\nconst result = validVideos.slice(0, 10).map(function(v) {\n  const views = parseInt(v.views) || 0;\n  const likes = parseInt(v.likes) || 0;\n  const comments = parseInt(v.comments) || 0;\n  const engPct = views > 0 ? Math.round(((likes + comments) / views) * 10000) / 100 : 0;\n  return {\n    json: {\n      has_videos: true,\n      video_id: v.video_id,\n      canal_id: canalInfo.canal_id || '',\n      nicho: canalInfo.nicho_alvo || '',\n      titulo: sanitize(v.title || ''),\n      url_video: 'https://www.youtube.com/watch?v=' + v.video_id,\n      thumbnail: v.thumbnail || 'https://i.ytimg.com/vi/' + v.video_id + '/hqdefault.jpg',\n      duracao_segundos: parseInt(v.duration_seconds) || 0,\n      views: views,\n      likes: likes,\n      comentarios: comments,\n      engagement_pct: engPct\n    }\n  };\n});\n\n// Sort by views DESC\nresult.sort(function(a, b) { return (b.json.views || 0) - (a.json.views || 0); });\nreturn result;"
+      },
+      "id": "9a635a7c-09ac-4369-9abc-22589093a5c0",
+      "name": "parse-ai-videos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10400,
+        5824
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "check-has-videos",
+              "leftValue": "={{ $json.has_videos }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9670ed9a-39d3-4d97-b402-530e34e65bc2",
+      "name": "if-has-videos",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        10624,
+        5824
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "af56dffd-652b-4bae-832c-cb86ec0f1402",
+      "name": "loop-by-channel",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        9600,
+        5968
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT canal_id, nome_canal, nicho_alvo\nFROM canais_descobertos\nWHERE ativo = true\n  AND score >= 0.70\n  AND nicho_alvo = '{{ $json.nicho_alvo }}'\nORDER BY score DESC, inscritos DESC\nLIMIT 100;\n",
+        "options": {}
+      },
+      "id": "0f5d5ca6-1c1a-4646-b72f-c8a20e3984b4",
+      "name": "fetch-top-channels",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        9376,
+        5968
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "a1214b3b-3803-46c9-bb21-259217821148",
+      "name": "schedule-trigger-2h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        8704,
+        5968
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node\n// Seleciona um slug aleatório do array\n\nconst slugs = $json.slugs || [];\n\nif (!Array.isArray(slugs) || slugs.length === 0) {\n  return [{ json: { nicho_alvo: \"\" } }];\n}\n\n// índice aleatório\nconst randomIndex = Math.floor(Math.random() * slugs.length);\n\n// slug selecionado\nconst nicho = slugs[randomIndex];\n\nreturn [\n  {\n    json: {\n      nicho_alvo: nicho\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9152,
+        5968
+      ],
+      "id": "7be3147c-801f-43ea-8270-9120d6c27d72",
+      "name": "parse-json"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT array_agg(slug ORDER BY slug) AS slugs\nFROM nichos\nWHERE ativo = true;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        8928,
+        5968
+      ],
+      "id": "70b888f4-2d35-44a1-8b05-26dab97045b4",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "PP028pDoSCi5j2TS",
+          "name": "[CRED]POSTGRES-SUPABASE"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('URL', ``, 'string') }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        10128,
+        6048
+      ],
+      "id": "23fe65a2-445d-4317-95ab-1c644b3b34ec",
+      "name": "get_videos"
+    }
+  ],
+  "pinData": {
+    "schedule-trigger-2h": [
+      {
+        "json": {
+          "timestamp": "2026-02-10T12:00:58.018-03:00",
+          "Readable date": "February 10th 2026, 12:00:58 pm",
+          "Readable time": "12:00:58 pm",
+          "Day of week": "Tuesday",
+          "Year": "2026",
+          "Month": "February",
+          "Day of month": "10",
+          "Hour": "12",
+          "Minute": "00",
+          "Second": "58",
+          "Timezone": "America/Sao_Paulo (UTC-03:00)"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ],
+    "parse-json": [
+      {
+        "json": {
+          "nicho_alvo": "tecnologia"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "loop-by-video": {
+      "main": [
+        [
+          {
+            "node": "loop-by-channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "if-high-engagement-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-high-engagement-video": {
+      "main": [
+        [
+          {
+            "node": "store-enriched-video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "skip-low-engagement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check-video-exists": {
+      "main": [
+        [
+          {
+            "node": "if-is-new-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-is-new-video": {
+      "main": [
+        [
+          {
+            "node": "prepare-insert-data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "skip-existing-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "insert-new-video": {
+      "main": [
+        [
+          {
+            "node": "loop-by-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "skip-existing-video": {
+      "main": [
+        [
+          {
+            "node": "loop-by-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "skip-low-engagement": {
+      "main": [
+        [
+          {
+            "node": "loop-by-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "skip-no-videos": {
+      "main": [
+        [
+          {
+            "node": "loop-by-channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-channel-context": {
+      "main": [
+        [
+          {
+            "node": "ai-find-videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-enriched-video": {
+      "main": [
+        [
+          {
+            "node": "check-video-exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-insert-data": {
+      "main": [
+        [
+          {
+            "node": "insert-new-video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai-find-videos": {
+      "main": [
+        [
+          {
+            "node": "parse-ai-videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-ai-videos": {
+      "main": [
+        [
+          {
+            "node": "if-has-videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-has-videos": {
+      "main": [
+        [
+          {
+            "node": "loop-by-video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "skip-no-videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loop-by-channel": {
+      "main": [
+        [
+          {
+            "node": "fetch-collection-summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "store-channel-context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-top-channels": {
+      "main": [
+        [
+          {
+            "node": "loop-by-channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "schedule-trigger-2h": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-json": {
+      "main": [
+        [
+          {
+            "node": "fetch-top-channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "parse-json",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_videos": {
+      "ai_tool": [
+        [
+          {
+            "node": "ai-find-videos",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "82218c30-052a-4ae8-b90e-87c7fd456fd9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c3d3f13ed352c61f35d7efc01bb5827a02954c101fba4b81a06a074154529b66"
+  },
+  "id": "10677gtlH_D5aNfRY-wvP",
+  "tags": []
+}
